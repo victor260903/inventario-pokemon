@@ -500,6 +500,12 @@ function EditSheet({ item, compras, onClose, onSave, onDelete }) {
               {compras.map((c) => <option key={c.id} value={c.id}>{c.id} — {c.seller}</option>)}
             </select>
           </Field>
+          <button
+            onClick={() => set("listed", !form.listed)}
+            style={{ ...styles.toggleBtn, marginBottom: 14, ...(form.listed ? styles.toggleBtnActive : {}) }}
+          >
+            {form.listed ? <Check size={14} /> : null} {form.listed ? "Ya está en Cardmarket" : "Marcar como ya subida a Cardmarket"}
+          </button>
           <Field label="Nombre de la carta"><input style={styles.input} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <div style={styles.fieldRow}>
             <Field label="Cantidad" half><input type="number" min="0" style={styles.input} value={form.qty} onChange={(e) => set("qty", parseInt(e.target.value) || 0)} /></Field>
