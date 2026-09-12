@@ -468,7 +468,6 @@ function EditSheet({ item, compras, onClose, onSave, onDelete }) {
   const [form, setForm] = useState({ ...item });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const linkedCompra = compras.find((c) => c.id === form.purchase);
   const save = () => { if (busy) return; setBusy(true); onSave(form); };
   const del = () => { if (busy) return; setBusy(true); onDelete(); };
 
@@ -484,12 +483,12 @@ function EditSheet({ item, compras, onClose, onSave, onDelete }) {
           <button onClick={onClose} style={styles.iconBtn}><X size={18} /></button>
         </div>
         <div style={styles.sheetBody}>
-          {linkedCompra && (
-            <div style={styles.originBadge}>
-              <Link2 size={13} color="var(--accent)" />
-              <span>Viene de <b>{linkedCompra.id}</b> — {linkedCompra.seller}</span>
-            </div>
-          )}
+          <Field label="Compra de origen">
+            <select value={form.purchase || ""} onChange={(e) => set("purchase", e.target.value || null)} style={styles.select}>
+              <option value="">Sin compra vinculada</option>
+              {compras.map((c) => <option key={c.id} value={c.id}>{c.id} — {c.seller}</option>)}
+            </select>
+          </Field>
           <Field label="Nombre de la carta"><input style={styles.input} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <div style={styles.fieldRow}>
             <Field label="Cantidad" half><input type="number" min="0" style={styles.input} value={form.qty} onChange={(e) => set("qty", parseInt(e.target.value) || 0)} /></Field>
