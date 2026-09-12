@@ -17,11 +17,13 @@ const rowToItem = (r) => ({
   id: r.id, set: r.set_code, num: r.num, name: r.name, lang: r.lang, variant: r.variant,
   cond: r.cond, qty: r.qty, cost: Number(r.cost) || 0, price: Number(r.price) || 0,
   purchase: r.purchase_id, loc: r.loc, platform: r.platform, status: r.status,
+  listed: !!r.listed,
 });
 const itemToRow = (it) => ({
   id: it.id, set_code: it.set, num: it.num, name: it.name, lang: it.lang, variant: it.variant,
   cond: it.cond, qty: it.qty, cost: it.cost, price: it.price, purchase_id: it.purchase || null,
   loc: it.loc || null, platform: it.platform || null, status: it.status,
+  listed: !!it.listed,
 });
 const rowToCompra = (r) => ({
   id: r.id, date: r.date, seller: r.seller, desc: r.description,
@@ -114,6 +116,14 @@ export default function App() {
     const { error } = await supabase.from("items").delete().eq("id", id);
     if (error) showToast("Error al eliminar: " + error.message);
     else showToast("Eliminada");
+  }
+
+  async function markListed(ids) {
+    if (!ids || ids.length === 0) return;
+    setItems((prev) => prev.map((it) => (ids.includes(it.id) ? { ...it, listed: true } : it)));
+    const { error } = await supabase.from("items").update({ listed: true }).in("id", ids);
+    if (error) showToast("Error: " + error.message);
+    else showToast(`${ids.length} marcadas como exportadas`);
   }
 
   async function addCompra(c) {
@@ -351,7 +361,7 @@ export default function App() {
           onDeleteVentaLine={deleteVentaLine} onDeleteVentaOrder={deleteVentaOrder}
         />
       )}
-      {tab === "exportar" && <ExportTab items={items} sets={sets} />}
+      {tab === "exportar" && <ExportTab items={items} sets={sets} onMarkListed={markListed} />}
       {tab === "resumen" && <SummaryTab items={items} sets={sets} compras={compras} ventas={ventas} ventaItems={ventaItems} />}
 
       <BottomNav tab={tab} setTab={setTab} />
@@ -454,6 +464,7 @@ function ItemRow({ item, onClick }) {
           <span style={styles.metaDot}>·</span><span>{item.lang}</span>
           <span style={styles.metaDot}>·</span><span>{item.variant}</span>
           {item.status && item.status !== "En stock" && (<><span style={styles.metaDot}>·</span><span style={styles.statusTag}>{item.status}</span></>)}
+          {item.listed && (<><span style={styles.metaDot}>·</span><span style={styles.listedTag}>✓ Cardmarket</span></>)}
         </div>
       </div>
       <div style={styles.itemRight}>
@@ -603,17 +614,20 @@ function AddTab({ onAdd, sets, compras }) {
   );
 }
 
-function ExportTab({ items, sets }) {
+function ExportTab({ items, sets, onMarkListed }) {
   const [set, setSet] = useState(sets[0] || "");
   const [lang, setLang] = useState("ES");
   const [onlyStock, setOnlyStock] = useState(true);
+  const [onlyUnlisted, setOnlyUnlisted] = useState(true);
+  const [justDownloaded, setJustDownloaded] = useState(null);
 
   const matching = useMemo(() => items.filter((it) => {
     if (it.set !== set) return false;
     if (it.lang !== lang) return false;
     if (onlyStock && (!(it.qty > 0) || (it.status || "En stock") !== "En stock")) return false;
+    if (onlyUnlisted && it.listed) return false;
     return true;
-  }), [items, set, lang, onlyStock]);
+  }), [items, set, lang, onlyStock, onlyUnlisted]);
 
   function download() {
     if (matching.length === 0) return;
@@ -626,6 +640,7 @@ function ExportTab({ items, sets }) {
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     });
+    setJustDownloaded(matching.map((it) => it.id));
   }
 
   return (
@@ -633,16 +648,19 @@ function ExportTab({ items, sets }) {
       <h2 style={styles.sectionTitle}>Exportar a Cardmarket</h2>
       <p style={styles.sectionSub}>Genera el CSV para "List bulk items", listo por tandas de 100.</p>
       <div style={{ marginTop: 20 }}>
-        <Field label="Colección"><Select value={set} onChange={setSet} options={sets} /></Field>
+        <Field label="Colección"><Select value={set} onChange={(v) => { setSet(v); setJustDownloaded(null); }} options={sets} /></Field>
         {isUnknownSet(set) && (
           <p style={styles.exportWarn}>
             No tengo el nombre completo de "{set}" en el registro. El CSV llevará el código tal cual — compruébalo en el desplegable de expansión de Cardmarket antes de importar.
           </p>
         )}
         <div style={styles.fieldRow}>
-          <Field label="Idioma" half><Select value={lang} onChange={setLang} options={LANGS} /></Field>
+          <Field label="Idioma" half><Select value={lang} onChange={(v) => { setLang(v); setJustDownloaded(null); }} options={LANGS} /></Field>
           <Field label="Filtro" half><button onClick={() => setOnlyStock((v) => !v)} style={{ ...styles.toggleBtn, ...(onlyStock ? styles.toggleBtnActive : {}) }}>{onlyStock ? <Check size={14} /> : null} Solo con stock</button></Field>
         </div>
+        <button onClick={() => setOnlyUnlisted((v) => !v)} style={{ ...styles.toggleBtn, marginTop: 10, ...(onlyUnlisted ? styles.toggleBtnActive : {}) }}>
+          {onlyUnlisted ? <Check size={14} /> : null} Solo cartas sin exportar todavía
+        </button>
       </div>
       <div style={styles.exportPreview}>
         <div style={styles.exportPreviewTop}>
@@ -658,6 +676,20 @@ function ExportTab({ items, sets }) {
         </div>
       </div>
       <button style={styles.primaryBtn} onClick={download} disabled={matching.length === 0}><Download size={17} /> Descargar CSV</button>
+
+      {justDownloaded && (
+        <div style={styles.exportPreview}>
+          <p style={{ fontSize: 13, color: "var(--text)", marginBottom: 10 }}>
+            Cuando ya lo hayas subido a Cardmarket, marca estas {justDownloaded.length} cartas como exportadas — así la próxima vez que exportes esta colección no vuelven a salir.
+          </p>
+          <button
+            style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }}
+            onClick={() => { onMarkListed(justDownloaded); setJustDownloaded(null); }}
+          >
+            <Check size={14} /> Marcar como ya exportadas en Cardmarket
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1129,6 +1161,7 @@ const styles = {
   setTag: { fontFamily: "var(--sans)", fontWeight: 800, color: "var(--fire-deep)" },
   metaDot: { color: "var(--card-line)" },
   statusTag: { color: "var(--fire-deep)" },
+  listedTag: { color: "var(--leaf-deep)", fontWeight: 800 },
   originTag: { display: "inline-flex", alignItems: "center", gap: 3, color: "var(--water-deep)" },
   itemRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, marginLeft: 10, flexShrink: 0 },
   itemQty: { fontFamily: "var(--display)", fontSize: 15, fontWeight: 700, color: "var(--ink)" },
