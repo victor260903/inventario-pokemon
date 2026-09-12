@@ -341,7 +341,7 @@ export default function App() {
           sets={sets} setFilter={setFilter} setSetFilter={setSetFilter} onEdit={setEditing}
         />
       )}
-      {tab === "anadir" && <AddTab onAdd={addItem} sets={sets} />}
+      {tab === "anadir" && <AddTab onAdd={addItem} sets={sets} compras={compras} />}
       {tab === "movimientos" && (
         <MovimientosTab
           items={items} compras={compras} ventas={ventas} ventaItems={ventaItems}
@@ -546,8 +546,8 @@ function Select({ value, onChange, options }) {
   );
 }
 
-function AddTab({ onAdd, sets }) {
-  const [form, setForm] = useState({ set: sets[0] || "", num: "", name: "", lang: "ES", variant: "Normal", cond: "NM", qty: 1, cost: 0.02, price: 0.05 });
+function AddTab({ onAdd, sets, compras }) {
+  const [form, setForm] = useState({ set: sets[0] || "", num: "", name: "", lang: "ES", variant: "Normal", cond: "NM", qty: 1, cost: 0.02, price: 0.05, purchase: "" });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -558,11 +558,18 @@ function AddTab({ onAdd, sets }) {
       set: form.set.toUpperCase(), num: parseInt(form.num) || 0, name: form.name.trim(),
       lang: form.lang, variant: form.variant, cond: form.cond,
       qty: parseInt(form.qty) || 0, cost: parseFloat(form.cost) || 0, price: parseFloat(form.price) || 0,
-      purchase: null, loc: null, platform: null, status: "En stock",
+      purchase: form.purchase || null, loc: null, platform: null, status: "En stock",
     });
     setForm((f) => ({ ...f, num: "", name: "", qty: 1 }));
     setBusy(false);
   }
+
+  const compraOptions = ["", ...compras.map((c) => c.id)];
+  const compraLabel = (id) => {
+    if (!id) return "Sin compra vinculada";
+    const c = compras.find((x) => x.id === id);
+    return c ? `${c.id} — ${c.seller}` : id;
+  };
 
   return (
     <div style={styles.tabBody}>
@@ -586,6 +593,11 @@ function AddTab({ onAdd, sets }) {
           <Field label="Coste unidad (€)" half><input type="number" step="0.01" style={styles.input} value={form.cost} onChange={(e) => set("cost", e.target.value)} /></Field>
           <Field label="Precio venta (€)" half><input type="number" step="0.01" style={styles.input} value={form.price} onChange={(e) => set("price", e.target.value)} /></Field>
         </div>
+        <Field label="Compra de origen">
+          <select value={form.purchase} onChange={(e) => set("purchase", e.target.value)} style={styles.select}>
+            {compraOptions.map((id) => <option key={id || "none"} value={id}>{compraLabel(id)}</option>)}
+          </select>
+        </Field>
         <button style={styles.primaryBtn} onClick={submit} disabled={busy}><Plus size={17} /> {busy ? "Añadiendo…" : "Añadir al inventario"}</button>
       </div>
     </div>
