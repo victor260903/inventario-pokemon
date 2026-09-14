@@ -510,8 +510,8 @@ function EditSheet({ item, compras, onClose, onSave, onDelete }) {
         <div style={styles.sheetBody}>
           <Field label="Compra de origen">
             <select value={form.purchase || ""} onChange={(e) => set("purchase", e.target.value || null)} style={styles.select}>
-              <option value="">Sin compra vinculada</option>
-              {compras.map((c) => <option key={c.id} value={c.id}>{c.id} — {c.seller}</option>)}
+              <option value="" style={{ background: "#241a4a", color: "#F5F3FF" }}>Sin compra vinculada</option>
+              {compras.map((c) => <option key={c.id} value={c.id} style={{ background: "#241a4a", color: "#F5F3FF" }}>{c.id} — {c.seller}</option>)}
             </select>
           </Field>
           <Field label="Unidades ya subidas a Cardmarket">
@@ -584,7 +584,17 @@ function Select({ value, onChange, options }) {
   return (
     <div style={styles.selectWrap}>
       <select value={value} onChange={(e) => onChange(e.target.value)} style={styles.select}>
-        {options.map((o) => <option key={o} value={o}>{o || "—"}</option>)}
+        {options.map((o) => {
+          const val = typeof o === "object" ? o.value : o;
+          const lab = typeof o === "object" ? o.label : o;
+          // El menú nativo lo pinta el sistema: hay que forzarle los colores
+          // o en Chrome sale texto claro sobre fondo blanco (ilegible).
+          return (
+            <option key={val} value={val} style={{ background: "#241a4a", color: "#F5F3FF" }}>
+              {lab || "—"}
+            </option>
+          );
+        })}
       </select>
       <ChevronDown size={14} color="var(--muted)" style={styles.selectChevron} />
     </div>
@@ -640,7 +650,7 @@ function AddTab({ onAdd, sets, compras }) {
         </div>
         <Field label="Compra de origen">
           <select value={form.purchase} onChange={(e) => set("purchase", e.target.value)} style={styles.select}>
-            {compraOptions.map((id) => <option key={id || "none"} value={id}>{compraLabel(id)}</option>)}
+            {compraOptions.map((id) => <option key={id || "none"} value={id} style={{ background: "#241a4a", color: "#F5F3FF" }}>{compraLabel(id)}</option>)}
           </select>
         </Field>
         <button style={styles.primaryBtn} onClick={submit} disabled={busy}><Plus size={17} /> {busy ? "Añadiendo…" : "Añadir al inventario"}</button>
@@ -655,6 +665,33 @@ function ExportTab({ items, sets, onMarkListed }) {
   const [onlyStock, setOnlyStock] = useState(true);
   const [onlyUnlisted, setOnlyUnlisted] = useState(true);
   const [justDownloaded, setJustDownloaded] = useState(null);
+
+  // Pendientes por colección para el idioma seleccionado, para verlo
+  // directamente en el desplegable sin ir set por set.
+  const pendPorSet = useMemo(() => {
+    const map = {};
+    for (const it of items) {
+      if (it.lang !== lang) continue;
+      if ((it.status || "En stock") !== "En stock") continue;
+      const p = pendingQty(it);
+      if (p > 0) map[it.set] = (map[it.set] || 0) + p;
+    }
+    return map;
+  }, [items, lang]);
+
+  // Primero las colecciones con trabajo pendiente, de más a menos
+  const setOptions = useMemo(() => {
+    const orden = [...sets].sort((a, b) => (pendPorSet[b] || 0) - (pendPorSet[a] || 0));
+    return orden.map((code) => ({
+      value: code,
+      label: pendPorSet[code] ? `${code} — ${pendPorSet[code]} sin subir` : `${code} — al día`,
+    }));
+  }, [sets, pendPorSet]);
+
+  const setsPendientes = useMemo(
+    () => Object.entries(pendPorSet).sort((a, b) => b[1] - a[1]),
+    [pendPorSet]
+  );
 
   const matching = useMemo(() => items
     .filter((it) => {
@@ -687,8 +724,24 @@ function ExportTab({ items, sets, onMarkListed }) {
     <div style={styles.tabBody}>
       <h2 style={styles.sectionTitle}>Exportar a Cardmarket</h2>
       <p style={styles.sectionSub}>Genera el CSV para "List bulk items". Exporta solo las unidades que aún no están en Cardmarket.</p>
+      {setsPendientes.length > 0 && (
+        <div style={styles.pendBox}>
+          <div style={styles.pendTitle}>Te falta por subir ({lang})</div>
+          <div style={styles.pendChips}>
+            {setsPendientes.map(([code, n]) => (
+              <button
+                key={code}
+                onClick={() => { setSet(code); setJustDownloaded(null); }}
+                style={{ ...styles.pendChip, ...(set === code ? styles.pendChipActive : {}) }}
+              >
+                {code} <strong>{n}</strong>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ marginTop: 20 }}>
-        <Field label="Colección"><Select value={set} onChange={(v) => { setSet(v); setJustDownloaded(null); }} options={sets} /></Field>
+        <Field label="Colección"><Select value={set} onChange={(v) => { setSet(v); setJustDownloaded(null); }} options={setOptions} /></Field>
         {isUnknownSet(set) && (
           <p style={styles.exportWarn}>
             No tengo el nombre completo de "{set}" en el registro. El CSV llevará el código tal cual — compruébalo en el desplegable de expansión de Cardmarket antes de importar.
@@ -1256,6 +1309,11 @@ const styles = {
   chip: { display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 20, fontSize: 12.5, fontFamily: "var(--sans)", fontWeight: 600, color: "var(--text)" },
   chipPos: { color: "#a6f0c6" },
   chipWarn: { color: "#ffd8a8" },
+  pendBox: { marginTop: 18, padding: "14px 16px", borderRadius: 16, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" },
+  pendTitle: { fontSize: 12, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 },
+  pendChips: { display: "flex", flexWrap: "wrap", gap: 8 },
+  pendChip: { padding: "7px 12px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "transparent", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
+  pendChipActive: { background: "var(--accent)", borderColor: "var(--accent)", color: "#2a1200" },
   chipNeg: { color: "#f7b8b3" },
 
   tabBody: { padding: "16px 18px 24px" },
@@ -1281,7 +1339,7 @@ const styles = {
   metaDot: { color: "var(--card-line)" },
   statusTag: { color: "var(--fire-deep)" },
   listedTag: { color: "var(--leaf-deep)", fontWeight: 800 },
-  pendingTag: { color: "var(--flame, #d97706)", fontWeight: 800 },
+  pendingTag: { color: "var(--gold-deep)", fontWeight: 800 },
   originTag: { display: "inline-flex", alignItems: "center", gap: 3, color: "var(--water-deep)" },
   itemRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, marginLeft: 10, flexShrink: 0 },
   itemQty: { fontFamily: "var(--display)", fontSize: 15, fontWeight: 700, color: "var(--ink)" },
@@ -1308,7 +1366,7 @@ const styles = {
   fieldLabel: { display: "block", fontSize: 11.5, color: "var(--muted)", marginBottom: 6, fontFamily: "var(--mono)" },
   input: { width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px", color: "var(--text)", fontSize: 14.5, fontFamily: "var(--sans)" },
   selectWrap: { position: "relative" },
-  select: { width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 9, padding: "10px 30px 10px 12px", color: "var(--text)", fontSize: 14.5, fontFamily: "var(--sans)", appearance: "none" },
+  select: { width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 9, padding: "10px 30px 10px 12px", color: "var(--text)", fontSize: 14.5, fontFamily: "var(--sans)", appearance: "none", colorScheme: "dark" },
   selectChevron: { position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" },
 
   valueSummary: { display: "flex", gap: 10, marginTop: 6, marginBottom: 16 },
