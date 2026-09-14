@@ -710,7 +710,9 @@ function ExportTab({ items, sets, onMarkListed }) {
     if (matching.length === 0) return;
     chunk(matching, 100).forEach((rows, idx, all) => {
       const csv = buildCardmarketCSV(rows);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      // BOM al principio: sin esto Cardmarket lee el archivo como Latin-1 y
+      // los nombres con tilde o ñ se corrompen, así que no reconoce la carta.
+      const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = `${set}_${lang}${all.length > 1 ? `_parte${idx + 1}` : ""}.csv`;
@@ -797,7 +799,8 @@ function MovimientosTab({ items, compras, ventas, ventaItems, onAddCompra, onUpd
   const pendientesTotal = useMemo(() => pendientes.reduce((a, [, d]) => a + d.qty, 0), [pendientes]);
 
   function descargar(contenido, nombre, tipo) {
-    const blob = new Blob([contenido], { type: tipo });
+    const esCSV = String(tipo).includes("csv");
+    const blob = new Blob([esCSV ? "\uFEFF" + contenido : contenido], { type: tipo });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = nombre;
@@ -1152,7 +1155,8 @@ function SummaryTab({ items, sets, compras, ventas, ventaItems }) {
   const pendientesTotal = useMemo(() => pendientes.reduce((a, [, d]) => a + d.qty, 0), [pendientes]);
 
   function descargar(contenido, nombre, tipo) {
-    const blob = new Blob([contenido], { type: tipo });
+    const esCSV = String(tipo).includes("csv");
+    const blob = new Blob([esCSV ? "\uFEFF" + contenido : contenido], { type: tipo });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = nombre;
