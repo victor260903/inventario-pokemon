@@ -4,6 +4,7 @@ import {
   eur, setLabel, isUnknownSet, itemValue, itemCostTotal, nextId,
   ventaCalc, computeStats, buildCardmarketCSV, chunk,
   applyStockDelta, restockOnDelete, orderCalc, rarityTone,
+  pendingQty, pendingBySet, buildBackup, buildInventoryCSV, checkStock,
 } from "./lib.js";
 
 describe("eur", () => {
@@ -225,5 +226,111 @@ describe("orderCalc — una venta con varias cartas dentro", () => {
     assert.equal(r.gross, 0);
     assert.equal(r.profit, 0);
     assert.equal(r.itemCount, 0);
+  });
+});
+
+describe("listedQty — unidades ya subidas a Cardmarket", () => {
+  test("vender una unidad baja también el contador de subidas", () => {
+    const item = { qty: 2, status: "En stock", listedQty: 2 };
+    const r = applyStockDelta(item, 0, 1);
+    assert.equal(r.qty, 1);
+    assert.equal(r.listedQty, 1, "la vendida ya no está en Cardmarket");
+  });
+  test("vender una carta que no estaba subida no toca el contador", () => {
+    const item = { qty: 3, status: "En stock", listedQty: 0 };
+    const r = applyStockDelta(item, 0, 1);
+    assert.equal(r.listedQty, 0);
+  });
+  test("vender de una parcialmente subida no baja de 0", () => {
+    const item = { qty: 3, status: "En stock", listedQty: 1 };
+    const r = applyStockDelta(item, 0, 3);
+    assert.equal(r.qty, 0);
+    assert.equal(r.listedQty, 0);
+  });
+  test("el contador nunca supera el stock restante", () => {
+    const item = { qty: 5, status: "En stock", listedQty: 5 };
+    const r = applyStockDelta(item, 0, 4);
+    assert.equal(r.qty, 1);
+    assert.equal(r.listedQty, 1);
+  });
+  test("corregir una venta a la baja no re-sube unidades a Cardmarket", () => {
+    const item = { qty: 0, status: "Vendida", listedQty: 0 };
+    const r = applyStockDelta(item, 3, 1); // devuelve 2 al stock
+    assert.equal(r.qty, 2);
+    assert.equal(r.listedQty, 0, "las que vuelven quedan pendientes de subir");
+  });
+  test("borrar una venta devuelve stock como pendiente de subir", () => {
+    const item = { qty: 1, status: "En stock", listedQty: 1 };
+    const r = restockOnDelete(item, 2);
+    assert.equal(r.qty, 3);
+    assert.equal(r.listedQty, 1, "solo sigue subida la que ya lo estaba");
+  });
+});
+
+describe("pendingQty / pendingBySet — qué falta por subir", () => {
+  test("stock menos subidas", () => {
+    assert.equal(pendingQty({ qty: 3, listedQty: 1 }), 2);
+    assert.equal(pendingQty({ qty: 2, listedQty: 2 }), 0);
+    assert.equal(pendingQty({ qty: 1 }), 1, "sin contador, todo pendiente");
+  });
+  test("nunca negativo aunque los datos estén descuadrados", () => {
+    assert.equal(pendingQty({ qty: 1, listedQty: 5 }), 0);
+  });
+  test("agrupa por set y ordena de más a menos", () => {
+    const items = [
+      { set: "TEF", qty: 2, listedQty: 0, status: "En stock" },
+      { set: "TEF", qty: 1, listedQty: 1, status: "En stock" },
+      { set: "SFA", qty: 5, listedQty: 0, status: "En stock" },
+      { set: "MEW", qty: 3, listedQty: 0, status: "Vendida" },
+    ];
+    const r = pendingBySet(items);
+    assert.equal(r.length, 2, "las vendidas no cuentan");
+    assert.equal(r[0][0], "SFA");
+    assert.equal(r[0][1].qty, 5);
+    assert.equal(r[1][1].qty, 2);
+  });
+});
+
+describe("checkStock — aviso de vender más de lo que hay", () => {
+  test("no avisa si hay stock de sobra", () => {
+    assert.equal(checkStock({ qty: 5, name: "Pikachu" }, 2), null);
+  });
+  test("no avisa al vender justo lo que queda", () => {
+    assert.equal(checkStock({ qty: 2, name: "Pikachu" }, 2), null);
+  });
+  test("avisa al pedir más de lo disponible", () => {
+    const r = checkStock({ qty: 1, name: "Pikachu" }, 3);
+    assert.equal(r.available, 1);
+    assert.equal(r.wanted, 3);
+  });
+  test("cuenta lo que ya va en el carrito de la misma carta", () => {
+    const r = checkStock({ qty: 3, name: "Pikachu" }, 2, 2);
+    assert.equal(r.available, 1, "ya había 2 en el carrito");
+  });
+});
+
+describe("copias de seguridad", () => {
+  const datos = {
+    items: [{ id: "P000001", set: "TEF", num: 13, name: "Sinistcha", lang: "ES", variant: "Normal", cond: "NM", qty: 2, listedQty: 1, cost: 0.5, price: 1.5, status: "En stock" }],
+    compras: [{ id: "C000001", totalCost: 10 }],
+    ventas: [{ id: "V000001" }],
+    ventaItems: [{ id: "VI000001" }],
+  };
+  test("el JSON se puede volver a leer entero", () => {
+    const parsed = JSON.parse(buildBackup(datos));
+    assert.equal(parsed.items.length, 1);
+    assert.equal(parsed.totales.cartas, 2);
+    assert.equal(parsed.items[0].name, "Sinistcha");
+  });
+  test("el CSV lleva cabecera y una fila por carta", () => {
+    const csv = buildInventoryCSV(datos.items);
+    const filas = csv.split("\n");
+    assert.equal(filas.length, 2);
+    assert.ok(filas[0].startsWith("ID,Set,Numero"));
+    assert.ok(filas[1].includes("Sinistcha"));
+  });
+  test("el CSV entrecomilla nombres con coma", () => {
+    const csv = buildInventoryCSV([{ ...datos.items[0], name: "Mr. Mime, EX" }]);
+    assert.ok(csv.includes('"Mr. Mime, EX"'));
   });
 });

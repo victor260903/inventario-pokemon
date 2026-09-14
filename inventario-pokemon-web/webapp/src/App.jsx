@@ -10,6 +10,7 @@ import {
   eur, setLabel, isUnknownSet, itemValue, itemCostTotal, nextId,
   computeStats, buildCardmarketCSV, chunk,
   applyStockDelta, restockOnDelete, orderCalc, rarityTone,
+  pendingQty, pendingBySet, buildBackup, buildInventoryCSV, checkStock,
 } from "./lib";
 
 /* ---------- mapeo DB (snake_case) <-> app (camelCase) ---------- */
@@ -17,13 +18,13 @@ const rowToItem = (r) => ({
   id: r.id, set: r.set_code, num: r.num, name: r.name, lang: r.lang, variant: r.variant,
   cond: r.cond, qty: r.qty, cost: Number(r.cost) || 0, price: Number(r.price) || 0,
   purchase: r.purchase_id, loc: r.loc, platform: r.platform, status: r.status,
-  listed: !!r.listed,
+  listedQty: Number(r.listed_qty) || 0,
 });
 const itemToRow = (it) => ({
   id: it.id, set_code: it.set, num: it.num, name: it.name, lang: it.lang, variant: it.variant,
   cond: it.cond, qty: it.qty, cost: it.cost, price: it.price, purchase_id: it.purchase || null,
   loc: it.loc || null, platform: it.platform || null, status: it.status,
-  listed: !!it.listed,
+  listed_qty: Number(it.listedQty) || 0,
 });
 const rowToCompra = (r) => ({
   id: r.id, date: r.date, seller: r.seller, desc: r.description,
@@ -92,7 +93,10 @@ export default function App() {
   }
 
   async function updateItem(id, patch) {
-    const full = { ...(items.find((x) => x.id === id) || {}), ...patch, id };
+    const merged = { ...(items.find((x) => x.id === id) || {}), ...patch, id };
+    // Nunca más unidades "subidas a Cardmarket" que stock real
+    const full = { ...merged, listedQty: Math.max(0, Math.min(merged.listedQty || 0, merged.qty || 0)) };
+    patch = { ...patch, listedQty: full.listedQty };
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
     const { error } = await supabase.from("items").update(itemToRow(full)).eq("id", id);
     if (error) showToast("Error al guardar: " + error.message);
@@ -120,10 +124,15 @@ export default function App() {
 
   async function markListed(ids) {
     if (!ids || ids.length === 0) return;
-    setItems((prev) => prev.map((it) => (ids.includes(it.id) ? { ...it, listed: true } : it)));
-    const { error } = await supabase.from("items").update({ listed: true }).in("id", ids);
-    if (error) showToast("Error: " + error.message);
-    else showToast(`${ids.length} marcadas como exportadas`);
+    // Cada carta pasa a tener TODAS sus unidades marcadas como subidas
+    const targets = items.filter((it) => ids.includes(it.id));
+    setItems((prev) => prev.map((it) => (ids.includes(it.id) ? { ...it, listedQty: it.qty || 0 } : it)));
+    const results = await Promise.all(
+      targets.map((it) => supabase.from("items").update({ listed_qty: it.qty || 0 }).eq("id", it.id))
+    );
+    const failed = results.find((r) => r.error);
+    if (failed) showToast("Error: " + failed.error.message);
+    else showToast(`${ids.length} marcadas como subidas`);
   }
 
   async function addCompra(c) {
@@ -402,14 +411,18 @@ function Header({ stats }) {
           <Chip icon={<Package size={13} />} label={`${stats.cards} cartas`} />
           <Chip icon={<LayoutGrid size={13} />} label={`${stats.sets} sets`} />
           <Chip icon={<TrendingUp size={13} />} label={`${eur(stats.profit)} beneficio`} tone={stats.profit >= 0 ? "pos" : "neg"} />
+          {stats.pending > 0 && (
+            <Chip icon={<ArrowUpFromLine size={13} />} label={`${stats.pending} sin subir`} tone="warn" />
+          )}
         </div>
       )}
     </div>
   );
 }
 function Chip({ icon, label, tone }) {
+  const toneStyle = tone === "pos" ? styles.chipPos : tone === "neg" ? styles.chipNeg : tone === "warn" ? styles.chipWarn : {};
   return (
-    <div style={{ ...styles.chip, ...(tone === "pos" ? styles.chipPos : tone === "neg" ? styles.chipNeg : {}) }}>
+    <div style={{ ...styles.chip, ...toneStyle }}>
       {icon}<span>{label}</span>
     </div>
   );
@@ -464,7 +477,8 @@ function ItemRow({ item, onClick }) {
           <span style={styles.metaDot}>·</span><span>{item.lang}</span>
           <span style={styles.metaDot}>·</span><span>{item.variant}</span>
           {item.status && item.status !== "En stock" && (<><span style={styles.metaDot}>·</span><span style={styles.statusTag}>{item.status}</span></>)}
-          {item.listed && (<><span style={styles.metaDot}>·</span><span style={styles.listedTag}>✓ Cardmarket</span></>)}
+          {(item.listedQty || 0) > 0 && (<><span style={styles.metaDot}>·</span><span style={styles.listedTag}>✓ {item.listedQty} en Cardmarket</span></>)}
+          {Math.max(0, (item.qty || 0) - (item.listedQty || 0)) > 0 && (item.listedQty || 0) > 0 && (<><span style={styles.metaDot}>·</span><span style={styles.pendingTag}>{Math.max(0, (item.qty || 0) - (item.listedQty || 0))} pendiente{Math.max(0, (item.qty || 0) - (item.listedQty || 0)) === 1 ? "" : "s"}</span></>)}
         </div>
       </div>
       <div style={styles.itemRight}>
@@ -500,12 +514,27 @@ function EditSheet({ item, compras, onClose, onSave, onDelete }) {
               {compras.map((c) => <option key={c.id} value={c.id}>{c.id} — {c.seller}</option>)}
             </select>
           </Field>
-          <button
-            onClick={() => set("listed", !form.listed)}
-            style={{ ...styles.toggleBtn, marginBottom: 14, ...(form.listed ? styles.toggleBtnActive : {}) }}
-          >
-            {form.listed ? <Check size={14} /> : null} {form.listed ? "Ya está en Cardmarket" : "Marcar como ya subida a Cardmarket"}
-          </button>
+          <Field label="Unidades ya subidas a Cardmarket">
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number" min="0" max={form.qty || 0}
+                style={{ ...styles.input, flex: 1 }}
+                value={form.listedQty ?? 0}
+                onChange={(e) => set("listedQty", Math.max(0, Math.min(parseInt(e.target.value) || 0, form.qty || 0)))}
+              />
+              <button
+                onClick={() => set("listedQty", form.qty || 0)}
+                style={{ ...styles.toggleBtn, whiteSpace: "nowrap" }}
+              >Todas</button>
+              <button
+                onClick={() => set("listedQty", 0)}
+                style={{ ...styles.toggleBtn, whiteSpace: "nowrap" }}
+              >Ninguna</button>
+            </div>
+          </Field>
+          <p style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: -8, marginBottom: 14 }}>
+            Tienes {form.qty || 0} en stock · {Math.max(0, (form.qty || 0) - (form.listedQty || 0))} sin subir todavía
+          </p>
           <Field label="Nombre de la carta"><input style={styles.input} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <div style={styles.fieldRow}>
             <Field label="Cantidad" half><input type="number" min="0" style={styles.input} value={form.qty} onChange={(e) => set("qty", parseInt(e.target.value) || 0)} /></Field>
@@ -627,13 +656,18 @@ function ExportTab({ items, sets, onMarkListed }) {
   const [onlyUnlisted, setOnlyUnlisted] = useState(true);
   const [justDownloaded, setJustDownloaded] = useState(null);
 
-  const matching = useMemo(() => items.filter((it) => {
-    if (it.set !== set) return false;
-    if (it.lang !== lang) return false;
-    if (onlyStock && (!(it.qty > 0) || (it.status || "En stock") !== "En stock")) return false;
-    if (onlyUnlisted && it.listed) return false;
-    return true;
-  }), [items, set, lang, onlyStock, onlyUnlisted]);
+  const matching = useMemo(() => items
+    .filter((it) => {
+      if (it.set !== set) return false;
+      if (it.lang !== lang) return false;
+      if (onlyStock && (!(it.qty > 0) || (it.status || "En stock") !== "En stock")) return false;
+      return true;
+    })
+    // Exportamos SOLO las unidades que aún no están en Cardmarket
+    .map((it) => ({ ...it, pendingQty: Math.max(0, (it.qty || 0) - (it.listedQty || 0)) }))
+    .filter((it) => (onlyUnlisted ? it.pendingQty > 0 : (it.qty || 0) > 0))
+    .map((it) => ({ ...it, qty: onlyUnlisted ? it.pendingQty : it.qty })),
+  [items, set, lang, onlyStock, onlyUnlisted]);
 
   function download() {
     if (matching.length === 0) return;
@@ -652,7 +686,7 @@ function ExportTab({ items, sets, onMarkListed }) {
   return (
     <div style={styles.tabBody}>
       <h2 style={styles.sectionTitle}>Exportar a Cardmarket</h2>
-      <p style={styles.sectionSub}>Genera el CSV para "List bulk items", listo por tandas de 100.</p>
+      <p style={styles.sectionSub}>Genera el CSV para "List bulk items". Exporta solo las unidades que aún no están en Cardmarket.</p>
       <div style={{ marginTop: 20 }}>
         <Field label="Colección"><Select value={set} onChange={(v) => { setSet(v); setJustDownloaded(null); }} options={sets} /></Field>
         {isUnknownSet(set) && (
@@ -665,7 +699,7 @@ function ExportTab({ items, sets, onMarkListed }) {
           <Field label="Filtro" half><button onClick={() => setOnlyStock((v) => !v)} style={{ ...styles.toggleBtn, ...(onlyStock ? styles.toggleBtnActive : {}) }}>{onlyStock ? <Check size={14} /> : null} Solo con stock</button></Field>
         </div>
         <button onClick={() => setOnlyUnlisted((v) => !v)} style={{ ...styles.toggleBtn, marginTop: 10, ...(onlyUnlisted ? styles.toggleBtnActive : {}) }}>
-          {onlyUnlisted ? <Check size={14} /> : null} Solo cartas sin exportar todavía
+          {onlyUnlisted ? <Check size={14} /> : null} Solo unidades sin subir a Cardmarket
         </button>
       </div>
       <div style={styles.exportPreview}>
@@ -686,13 +720,13 @@ function ExportTab({ items, sets, onMarkListed }) {
       {justDownloaded && (
         <div style={styles.exportPreview}>
           <p style={{ fontSize: 13, color: "var(--text)", marginBottom: 10 }}>
-            Cuando ya lo hayas subido a Cardmarket, marca estas {justDownloaded.length} cartas como exportadas — así la próxima vez que exportes esta colección no vuelven a salir.
+            Cuando ya lo hayas subido a Cardmarket, marca estas {justDownloaded.length} cartas — sus unidades pasarán a contar como subidas y no volverán a salir en el próximo CSV.
           </p>
           <button
             style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }}
             onClick={() => { onMarkListed(justDownloaded); setJustDownloaded(null); }}
           >
-            <Check size={14} /> Marcar como ya exportadas en Cardmarket
+            <Check size={14} /> Marcar sus unidades como subidas
           </button>
         </div>
       )}
@@ -705,6 +739,26 @@ function MovimientosTab({ items, compras, ventas, ventaItems, onAddCompra, onUpd
   const [showAdd, setShowAdd] = useState(false);
   const [editingC, setEditingC] = useState(null);
   const [editingV, setEditingV] = useState(null);
+
+  const pendientes = useMemo(() => pendingBySet(items), [items]);
+  const pendientesTotal = useMemo(() => pendientes.reduce((a, [, d]) => a + d.qty, 0), [pendientes]);
+
+  function descargar(contenido, nombre, tipo) {
+    const blob = new Blob([contenido], { type: tipo });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  const hoy = () => new Date().toISOString().slice(0, 10);
+  const bajarBackup = () => descargar(
+    buildBackup({ items, compras, ventas, ventaItems }),
+    `backup_inventario_${hoy()}.json`, "application/json"
+  );
+  const bajarCSV = () => descargar(
+    buildInventoryCSV(items), `inventario_${hoy()}.csv`, "text/csv;charset=utf-8;"
+  );
 
   const totalCompras = useMemo(() => compras.reduce((a, c) => a + (c.totalCost || 0), 0), [compras]);
   const totalCartasCompradas = useMemo(() => compras.reduce((a, c) => a + (c.cardCount || 0), 0), [compras]);
@@ -902,6 +956,16 @@ function VentaOrderSheet({ items, existing, onClose, onSave, onSaveHeader, onAdd
   function addLineToCart() {
     if (!pickedItem) return;
     const qty = parseInt(lineQty) || 1;
+    // Cuántas unidades de esta misma carta ya van en el carrito
+    const already = cart.filter((l) => l.itemId === pickedItem.id).reduce((a, l) => a + (l.qty || 0), 0);
+    const warn = checkStock(pickedItem, qty, already);
+    if (warn) {
+      const ok = window.confirm(
+        `Solo tienes ${warn.available} unidad${warn.available === 1 ? "" : "es"} de ${warn.name} y estás vendiendo ${warn.wanted}.\n\n` +
+        `Si continúas, el stock se quedará en 0 y el descuadre no se registrará en ningún sitio.\n\n¿Seguir de todas formas?`
+      );
+      if (!ok) return;
+    }
     const newLine = {
       itemId: pickedItem.id,
       itemLabel: `${pickedItem.name} (${pickedItem.set} #${String(pickedItem.num).padStart(3, "0")})`,
@@ -1031,6 +1095,26 @@ function SummaryTab({ items, sets, compras, ventas, ventaItems }) {
   }, [items]);
   const maxValue = bySet.length ? bySet[0][1].value : 1;
 
+  const pendientes = useMemo(() => pendingBySet(items), [items]);
+  const pendientesTotal = useMemo(() => pendientes.reduce((a, [, d]) => a + d.qty, 0), [pendientes]);
+
+  function descargar(contenido, nombre, tipo) {
+    const blob = new Blob([contenido], { type: tipo });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = nombre;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  const hoy = () => new Date().toISOString().slice(0, 10);
+  const bajarBackup = () => descargar(
+    buildBackup({ items, compras, ventas, ventaItems }),
+    `backup_inventario_${hoy()}.json`, "application/json"
+  );
+  const bajarCSV = () => descargar(
+    buildInventoryCSV(items), `inventario_${hoy()}.csv`, "text/csv;charset=utf-8;"
+  );
+
   const totalCompras = useMemo(() => compras.reduce((a, c) => a + (c.totalCost || 0), 0), [compras]);
   const ordersCalc = useMemo(() => ventas.map((v) => orderCalc(v, ventaItems.filter((l) => l.ventaId === v.id))), [ventas, ventaItems]);
   const totalVentaNeta = useMemo(() => ordersCalc.reduce((a, o) => a + o.net, 0), [ordersCalc]);
@@ -1045,6 +1129,34 @@ function SummaryTab({ items, sets, compras, ventas, ventaItems }) {
         <div style={styles.summaryTopCard}><span style={styles.summaryTopLabel}>Ingreso neto ventas</span><span style={styles.summaryTopVal}>{eur(totalVentaNeta)}</span></div>
         <div style={styles.summaryTopCard}><span style={styles.summaryTopLabel}>Beneficio realizado</span><span style={{ ...styles.summaryTopVal, color: totalVentaBeneficio >= 0 ? "var(--pos)" : "var(--neg)" }}>{eur(totalVentaBeneficio)}</span></div>
       </div>
+      <h3 style={styles.subheading}>Pendiente de subir a Cardmarket</h3>
+      {pendientesTotal === 0 ? (
+        <p style={styles.sectionSub}>Todo tu stock está subido. No tienes nada pendiente.</p>
+      ) : (
+        <>
+          <p style={styles.sectionSub}>{pendientesTotal} cartas esperando a que las subas, en {pendientes.length} {pendientes.length === 1 ? "colección" : "colecciones"}.</p>
+          <div style={{ marginTop: 14 }}>
+            {pendientes.map(([code, d]) => (
+              <div key={code} style={styles.exportRow}>
+                <span>{setLabel(code)}</span>
+                <span style={styles.exportRowMeta}>{d.qty} cartas · {d.refs} ref.</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <h3 style={styles.subheading}>Copia de seguridad</h3>
+      <p style={styles.sectionSub}>Guárdate una copia de vez en cuando. Si Supabase falla o borras algo sin querer, esto es lo único que te salva.</p>
+      <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+        <button onClick={bajarBackup} style={{ ...styles.toggleBtn, flex: 1, minWidth: 150 }}>
+          <ArrowDownToLine size={14} /> Copia completa (JSON)
+        </button>
+        <button onClick={bajarCSV} style={{ ...styles.toggleBtn, flex: 1, minWidth: 150 }}>
+          <Download size={14} /> Inventario (CSV)
+        </button>
+      </div>
+
       <h3 style={styles.subheading}>Stock por colección</h3>
       <p style={styles.sectionSub}>Solo cartas en stock. Ordenado por valor.</p>
       <div style={{ marginTop: 20 }}>
@@ -1143,6 +1255,7 @@ const styles = {
   headerChips: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" },
   chip: { display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 20, fontSize: 12.5, fontFamily: "var(--sans)", fontWeight: 600, color: "var(--text)" },
   chipPos: { color: "#a6f0c6" },
+  chipWarn: { color: "#ffd8a8" },
   chipNeg: { color: "#f7b8b3" },
 
   tabBody: { padding: "16px 18px 24px" },
@@ -1168,6 +1281,7 @@ const styles = {
   metaDot: { color: "var(--card-line)" },
   statusTag: { color: "var(--fire-deep)" },
   listedTag: { color: "var(--leaf-deep)", fontWeight: 800 },
+  pendingTag: { color: "var(--flame, #d97706)", fontWeight: 800 },
   originTag: { display: "inline-flex", alignItems: "center", gap: 3, color: "var(--water-deep)" },
   itemRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, marginLeft: 10, flexShrink: 0 },
   itemQty: { fontFamily: "var(--display)", fontSize: 15, fontWeight: 700, color: "var(--ink)" },
