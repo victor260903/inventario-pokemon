@@ -66,20 +66,28 @@ export default function App() {
   const loadAll = useCallback(async () => {
     setLoadError(null);
     try {
+      // Supabase devuelve como mucho 1000 filas por consulta, asi que pedimos
+      // por tandas hasta que una venga incompleta. Sin esto, al pasar de 1000
+      // cartas las mas nuevas dejaban de cargarse en silencio.
+      const TANDA = 1000;
+      const traerTodo = async (tabla) => {
+        const acumulado = [];
+        for (let desde = 0; ; desde += TANDA) {
+          const { data, error } = await supabase
+            .from(tabla).select("*").order("id").range(desde, desde + TANDA - 1);
+          if (error) throw error;
+          acumulado.push(...data);
+          if (data.length < TANDA) return acumulado;
+        }
+      };
       const [i, c, v, vi] = await Promise.all([
-        supabase.from("items").select("*").order("id"),
-        supabase.from("compras").select("*").order("id"),
-        supabase.from("ventas").select("*").order("id"),
-        supabase.from("venta_items").select("*").order("id"),
+        traerTodo("items"), traerTodo("compras"),
+        traerTodo("ventas"), traerTodo("venta_items"),
       ]);
-      if (i.error) throw i.error;
-      if (c.error) throw c.error;
-      if (v.error) throw v.error;
-      if (vi.error) throw vi.error;
-      setItems(i.data.map(rowToItem));
-      setCompras(c.data.map(rowToCompra));
-      setVentas(v.data.map(rowToVentaOrder));
-      setVentaItems(vi.data.map(rowToVentaItem));
+      setItems(i.map(rowToItem));
+      setCompras(c.map(rowToCompra));
+      setVentas(v.map(rowToVentaOrder));
+      setVentaItems(vi.map(rowToVentaItem));
     } catch (e) {
       setLoadError(e.message || String(e));
     }
